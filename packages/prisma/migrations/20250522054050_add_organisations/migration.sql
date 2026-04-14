@@ -633,6 +633,34 @@ SET "organisationId" = o."id"
 FROM new_orgs o
 WHERE s."userId" = o."ownerUserId";
 
+-- [CUSTOM_FIX] Handle orphan teams: teams without subscription that aren't personal
+-- These teams weren't caught by the 3 CTEs above. Assign them to their owner's personal organisation.
+UPDATE "Team" t
+SET "organisationId" = o."id"
+FROM "Organisation" o
+WHERE o."ownerUserId" = t."ownerUserId"
+AND o."type" = 'PERSONAL'::"OrganisationType"
+AND t."organisationId" IS NULL;
+
+-- [CUSTOM_FIX] Safety net: if any team STILL has no organisation (owner has no personal org),
+-- create a personal organisation for that owner and assign the team.
+WITH orphan_owners AS (
+  SELECT DISTINCT t."ownerUserId"
+  FROM "Team" t
+  WHERE t."organisationId" IS NULL
+  AND NOT EXISTS (SELECT 1 FROM "Organisation" o WHERE o."ownerUserId" = t."ownerUserId")
+),
+new_personal_orgs AS (
+  INSERT INTO "Organisation" ("id", "createdAt", "updatedAt", "type", "name", "url", "ownerUserId")
+  SELECT generate_prefix_id('org'), NOW(), NOW(), 'PERSONAL'::"OrganisationType", 'Personal Organisation', generate_id(), oo."ownerUserId"
+  FROM orphan_owners oo
+  RETURNING "id", "ownerUserId"
+)
+UPDATE "Team" t
+SET "organisationId" = npo."id"
+FROM new_personal_orgs npo
+WHERE npo."ownerUserId" = t."ownerUserId" AND t."organisationId" IS NULL;
+
 -- Create 3 internal groups for each organisation (ADMIN, MANAGER, MEMBER)
 WITH org_groups AS (
   SELECT
